@@ -1,14 +1,15 @@
 // Package tiengtrungbotui is the library behind the tiengtrungbotui command line:
-// the HTTP client, request shaping, and the typed data models for tiengtrungbotui.
+// the HTTP client, request shaping, and the typed data models for the
+// Tiếng Trung Bỏ Túi Vietnamese Chinese-learning site.
 //
 // The Client here is the spine every command shares. It sets a real
 // User-Agent, paces requests so a busy session stays polite, and retries the
 // transient failures (429 and 5xx) that any public site throws under load.
-// Build your endpoint calls and JSON decoding on top of it.
 package tiengtrungbotui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,31 +18,38 @@ import (
 	"time"
 )
 
-// DefaultUserAgent identifies the client to tiengtrungbotui. A real, honest
-// User-Agent is both polite and the thing most likely to keep you unblocked.
+// DefaultUserAgent identifies the client to the remote host.
 const DefaultUserAgent = "tiengtrungbotui/dev (+https://github.com/tamnd/tiengtrungbotui-cli)"
 
 // Host is the site this client talks to, and the host the URI driver in
-// domain.go claims. The scaffold points it at tiengtrungbotui.com; change it once you
-// know the real endpoints you want to read.
-const Host = "tiengtrungbotui.com"
+// domain.go claims.
+const Host = "www.tiengtrungbotui.com"
 
 // BaseURL is the root every request is built from.
 const BaseURL = "https://" + Host
 
-// Client talks to tiengtrungbotui over HTTP.
+var (
+	// seriesRe extracts slug + title from the bold-anchor section headers on /videos.
+	seriesRe = regexp.MustCompile(`href="(/videos/[a-z0-9-]+)"[^>]*class="[^"]*font-bold[^"]*"[^>]*>(.*?)</a>`)
+	// ldjsonRe extracts the content of application/ld+json script tags.
+	ldjsonRe = regexp.MustCompile(`<script type="application/ld\+json">(.*?)</script>`)
+	// tagRe strips HTML tags.
+	tagRe = regexp.MustCompile(`<[^>]+>`)
+	// ytIDRe extracts a YouTube video ID from a ytimg.com thumbnail URL.
+	ytIDRe = regexp.MustCompile(`/vi/([a-zA-Z0-9_-]{11})/`)
+)
+
+// Client talks to tiengtrungbotui.com over HTTP.
 type Client struct {
 	HTTP      *http.Client
 	UserAgent string
-	// Rate is the minimum gap between requests. Zero means no pacing.
-	Rate    time.Duration
-	Retries int
+	Rate      time.Duration
+	Retries   int
 
 	last time.Time
 }
 
-// NewClient returns a Client with sensible defaults: a 30s timeout, a 200ms
-// minimum gap between requests, and five retries on transient errors.
+// NewClient returns a Client with sensible defaults.
 func NewClient() *Client {
 	return &Client{
 		HTTP:      &http.Client{Timeout: 30 * time.Second},
@@ -51,9 +59,89 @@ func NewClient() *Client {
 	}
 }
 
+// Series fetches the /videos index and returns all video series.
+func (c *Client) Series(ctx context.Context) ([]*Series, error) {
+	body, err := c.Get(ctx, BaseURL+"/videos")
+	if err != nil {
+		return nil, err
+	}
+	html := string(body)
+	var out []*Series
+	seen := map[string]bool{}
+	rank := 1
+	for _, m := range seriesRe.FindAllStringSubmatch(html, -1) {
+		path := m[1]
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		slug := strings.TrimPrefix(path, "/videos/")
+		title := strings.TrimSpace(tagRe.ReplaceAllString(m[2], ""))
+		out = append(out, &Series{
+			Rank:  rank,
+			Slug:  slug,
+			Title: title,
+			URL:   BaseURL + path,
+		})
+		rank++
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no series found")
+	}
+	return out, nil
+}
+
+// Episodes fetches a series page and returns all episodes from its JSON-LD data.
+func (c *Client) Episodes(ctx context.Context, seriesSlug string) ([]*Episode, error) {
+	body, err := c.Get(ctx, BaseURL+"/videos/"+seriesSlug)
+	if err != nil {
+		return nil, err
+	}
+	html := string(body)
+
+	var collection struct {
+		HasPart []struct {
+			Name         string `json:"name"`
+			URL          string `json:"url"`
+			ThumbnailURL string `json:"thumbnailUrl"`
+			Level        string `json:"educationalLevel"`
+		} `json:"hasPart"`
+	}
+
+	for _, m := range ldjsonRe.FindAllStringSubmatch(html, -1) {
+		raw := m[1]
+		if err := json.Unmarshal([]byte(raw), &collection); err != nil {
+			continue
+		}
+		if len(collection.HasPart) > 0 {
+			break
+		}
+	}
+
+	if len(collection.HasPart) == 0 {
+		return nil, fmt.Errorf("no episodes found for series %q", seriesSlug)
+	}
+
+	var out []*Episode
+	for i, v := range collection.HasPart {
+		ytID := ""
+		if m := ytIDRe.FindStringSubmatch(v.ThumbnailURL); m != nil {
+			ytID = m[1]
+		}
+		out = append(out, &Episode{
+			Rank:      i + 1,
+			Series:    seriesSlug,
+			Level:     v.Level,
+			Title:     v.Name,
+			YouTubeID: ytID,
+			URL:       v.URL,
+		})
+	}
+	return out, nil
+}
+
 // Get fetches url and returns the response body. It paces and retries according
-// to the client's settings. The caller owns nothing extra; the body is read
-// fully and closed here.
+// to the client's settings.
 func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.Retries; attempt++ {
@@ -104,7 +192,6 @@ func (c *Client) do(ctx context.Context, url string) (body []byte, retry bool, e
 	return b, false, nil
 }
 
-// pace blocks until at least Rate has passed since the previous request.
 func (c *Client) pace() {
 	if c.Rate <= 0 {
 		return
@@ -116,85 +203,5 @@ func (c *Client) pace() {
 }
 
 func backoff(attempt int) time.Duration {
-	d := time.Duration(attempt) * 500 * time.Millisecond
-	if d > 5*time.Second {
-		d = 5 * time.Second
-	}
-	return d
-}
-
-// Page is the scaffold's one example record: a single page, addressed by the
-// path that names it on tiengtrungbotui.com. It is a stand-in for the typed records you
-// will model from the real tiengtrungbotui endpoints. The kit struct tags make it
-// addressable as a resource URI (see domain.go): ID is the URI id, and Body is
-// the long text `tiengtrungbotui cat` and the Markdown export print.
-type Page struct {
-	ID    string `json:"id" kit:"id"`
-	URL   string `json:"url"`
-	Title string `json:"title,omitempty"`
-	Body  string `json:"body,omitempty" kit:"body"`
-}
-
-// GetPage fetches one page by its path (for example "wiki/Go") and returns it as
-// a record. The scaffold keeps a plain-text preview of the response as the body;
-// replace the parsing with the real fields once you know the endpoint's shape.
-func (c *Client) GetPage(ctx context.Context, path string) (*Page, error) {
-	path = strings.Trim(path, "/")
-	url := BaseURL + "/" + path
-	body, err := c.Get(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-	return &Page{ID: path, URL: url, Title: path, Body: pageText(body)}, nil
-}
-
-// PageLinks fetches a page and returns the same-host pages it links to, as page
-// stubs. It shows the member-listing pattern the URI driver relies on: every
-// stub carries enough (an id and a URL) to be addressed and followed on its own.
-func (c *Client) PageLinks(ctx context.Context, path string, limit int) ([]*Page, error) {
-	path = strings.Trim(path, "/")
-	body, err := c.Get(ctx, BaseURL+"/"+path)
-	if err != nil {
-		return nil, err
-	}
-	var out []*Page
-	seen := map[string]bool{}
-	for _, p := range linkPaths(body) {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, &Page{ID: p, URL: BaseURL + "/" + p})
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-	}
-	return out, nil
-}
-
-var (
-	hrefRE = regexp.MustCompile(`href="(/[^":#?]+)"`)
-	tagRE  = regexp.MustCompile(`<[^>]+>`)
-)
-
-// linkPaths pulls the relative link targets out of an HTML response, so a list
-// op can turn each into an addressable page stub.
-func linkPaths(body []byte) []string {
-	var out []string
-	for _, m := range hrefRE.FindAllSubmatch(body, -1) {
-		if p := strings.Trim(string(m[1]), "/"); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// pageText reduces an HTML response to a short plain-text preview, a stand-in
-// for the typed extract a real endpoint would hand you.
-func pageText(body []byte) string {
-	s := strings.Join(strings.Fields(tagRE.ReplaceAllString(string(body), " ")), " ")
-	if len(s) > 500 {
-		s = s[:500]
-	}
-	return s
+	return min(time.Duration(attempt)*500*time.Millisecond, 5*time.Second)
 }

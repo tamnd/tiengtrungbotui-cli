@@ -18,7 +18,7 @@ func TestGet(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient()
-	c.Rate = 0 // no pacing in the test
+	c.Rate = 0
 
 	body, err := c.Get(context.Background(), srv.URL)
 	if err != nil {
