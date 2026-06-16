@@ -1,6 +1,6 @@
 # Build into bin/ (gitignored) so the binary never collides with the tiengtrungbotui/
 # source package at the repo root.
-BINARY  := bin/tiengtrungbotui
+BINARY  := bin/ttbt
 PKG     := ./cmd/tiengtrungbotui
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)

@@ -17,7 +17,7 @@ before:
 
 builds:
   - id: tiengtrungbotui
-    binary: tiengtrungbotui
+    binary: ttbt
     main: ./cmd/tiengtrungbotui
     env:
       - CGO_ENABLED=0
