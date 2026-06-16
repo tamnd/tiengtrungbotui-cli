@@ -14,16 +14,23 @@ func TestDomainInfo(t *testing.T) {
 	if len(info.Hosts) == 0 || info.Hosts[0] != Host {
 		t.Errorf("Hosts = %v, want [%s]", info.Hosts, Host)
 	}
-	if info.Identity.Binary != "tiengtrungbotui" {
-		t.Errorf("Identity.Binary = %q, want tiengtrungbotui", info.Identity.Binary)
+	if info.Identity.Binary != "ttbt" {
+		t.Errorf("Identity.Binary = %q, want ttbt", info.Identity.Binary)
 	}
 }
 
 func TestClassify(t *testing.T) {
 	cases := []struct{ in, typ, id string }{
+		// Bare series slug
 		{"tieng-trung-moi-ngay", "series", "tieng-trung-moi-ngay"},
-		{"/videos/tieng-trung-moi-ngay/", "series", "videos/tieng-trung-moi-ngay"},
-		{"https://" + Host + "/videos/tieng-trung-moi-ngay", "series", "videos/tieng-trung-moi-ngay"},
+		// Path with /videos/ prefix
+		{"/videos/tieng-trung-moi-ngay/", "series", "tieng-trung-moi-ngay"},
+		// Full series URL
+		{"https://" + Host + "/videos/tieng-trung-moi-ngay", "series", "tieng-trung-moi-ngay"},
+		// Episode path "series/episode"
+		{"tieng-trung-moi-ngay/hsk-1-2-ep", "episode", "tieng-trung-moi-ngay/hsk-1-2-ep"},
+		// Full episode URL
+		{"https://" + Host + "/videos/tieng-trung-moi-ngay/hsk-1-2-ep", "episode", "tieng-trung-moi-ngay/hsk-1-2-ep"},
 	}
 	for _, tc := range cases {
 		typ, id, err := Domain{}.Classify(tc.in)
@@ -35,10 +42,17 @@ func TestClassify(t *testing.T) {
 }
 
 func TestLocate(t *testing.T) {
-	got, err := Domain{}.Locate("series", "tieng-trung-moi-ngay")
-	want := "https://" + Host + "/videos/tieng-trung-moi-ngay"
-	if err != nil || got != want {
-		t.Errorf("Locate = (%q, %v), want (%q, nil)", got, err, want)
+	cases := []struct {
+		uriType, id, want string
+	}{
+		{"series", "tieng-trung-moi-ngay", BaseURL + "/videos/tieng-trung-moi-ngay"},
+		{"episode", "tieng-trung-moi-ngay/hsk-1-2-ep", BaseURL + "/videos/tieng-trung-moi-ngay/hsk-1-2-ep"},
+	}
+	for _, tc := range cases {
+		got, err := Domain{}.Locate(tc.uriType, tc.id)
+		if err != nil || got != tc.want {
+			t.Errorf("Locate(%q, %q) = (%q, %v), want (%q, nil)", tc.uriType, tc.id, got, err, tc.want)
+		}
 	}
 }
 
